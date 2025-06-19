@@ -17,9 +17,12 @@ app = Flask(__name__)
 DEEPL_API_KEY = os.getenv("DEEPL_API_KEY")
 DEEPL_API_URL = "https://api-free.deepl.com/v2/translate" 
 
-# Vérifier que la clé API est bien définie
+# Créer le dossier static s'il n'existe pas
+os.makedirs(os.path.join(os.path.dirname(__file__), 'static'), exist_ok=True)
+
+# Vérifier que la clé API est bien définie (optionnel en production)
 if not DEEPL_API_KEY:
-    raise ValueError("La clé API DeepL n'est pas définie dans le fichier .env")
+    print("ATTENTION: La clé API DeepL n'est pas définie dans les variables d'environnement")
 
 # Langues supportées par DeepL et gTTS
 SUPPORTED_LANGUAGES = {
@@ -68,25 +71,28 @@ def home():
             if cleaned_text in STATIC_RESPONSES:
                 translation = STATIC_RESPONSES[cleaned_text]
             else:
-                data = {
-                    "auth_key": DEEPL_API_KEY,
-                    "text": text,
-                    "target_lang": target_lang
-                }
+                if not DEEPL_API_KEY:
+                    error = "Service de traduction non configuré."
+                else:
+                    data = {
+                        "auth_key": DEEPL_API_KEY,
+                        "text": text,
+                        "target_lang": target_lang
+                    }
 
-                try:
-                    response = requests.post(DEEPL_API_URL, data=data, timeout=10)
-                    if response.status_code == 200:
-                        result = response.json()
-                        translation = result["translations"][0]["text"]
-                    else:
-                        error = f"Erreur DeepL ({response.status_code}) : {response.text}"
-                except requests.exceptions.Timeout:
-                    error = "Le service de traduction est temporairement indisponible (timeout)."
-                except requests.exceptions.RequestException as e:
-                    error = f"Erreur réseau lors de la requête : {str(e)}"
-                except Exception as e:
-                    error = f"Erreur inattendue : {str(e)}"
+                    try:
+                        response = requests.post(DEEPL_API_URL, data=data, timeout=10)
+                        if response.status_code == 200:
+                            result = response.json()
+                            translation = result["translations"][0]["text"]
+                        else:
+                            error = f"Erreur DeepL ({response.status_code}) : {response.text}"
+                    except requests.exceptions.Timeout:
+                        error = "Le service de traduction est temporairement indisponible (timeout)."
+                    except requests.exceptions.RequestException as e:
+                        error = f"Erreur réseau lors de la requête : {str(e)}"
+                    except Exception as e:
+                        error = f"Erreur inattendue : {str(e)}"
 
     return render_template(
         "index.html",
@@ -106,8 +112,12 @@ def speak(text):
         return jsonify({"error": "Langue non supportée"}), 400
 
     try:
+        # Assurer que le dossier static existe
+        static_folder = app.static_folder or os.path.join(os.path.dirname(__file__), 'static')
+        os.makedirs(static_folder, exist_ok=True)
+        
         filename = f"translation_{uuid.uuid4()}.mp3"
-        filepath = os.path.join(app.static_folder, filename)
+        filepath = os.path.join(static_folder, filename)
 
         tts = gTTS(text=text, lang=lang)
         tts.save(filepath)
@@ -119,20 +129,26 @@ def speak(text):
 
 
 def cleanup_old_files(folder, max_age_seconds=3600):
-    now = time.time()
-    for filename in os.listdir(folder):
-        filepath = os.path.join(folder, filename)
-        if os.path.isfile(filepath) and filename.startswith("translation_"):
-            if now - os.path.getmtime(filepath) > max_age_seconds:
-                try:
-                    os.remove(filepath)
-                except Exception as e:
-                    print(f"Erreur lors de la suppression de {filename}: {str(e)}")
+    try:
+        if not os.path.exists(folder):
+            return
+        now = time.time()
+        for filename in os.listdir(folder):
+            filepath = os.path.join(folder, filename)
+            if os.path.isfile(filepath) and filename.startswith("translation_"):
+                if now - os.path.getmtime(filepath) > max_age_seconds:
+                    try:
+                        os.remove(filepath)
+                    except Exception as e:
+                        print(f"Erreur lors de la suppression de {filename}: {str(e)}")
+    except Exception as e:
+        print(f"Erreur lors du nettoyage: {str(e)}")
 
 
 @app.before_request
 def before_request():
-    cleanup_old_files(app.static_folder)
+    static_folder = app.static_folder or os.path.join(os.path.dirname(__file__), 'static')
+    cleanup_old_files(static_folder)
 
 
 @app.errorhandler(404)
@@ -151,6 +167,12 @@ def handle_exception(e):
     return render_template("error.html", error=f"Une erreur est survenue : {str(e)}"), 500
 
 
+# Route de santé pour Railway
+@app.route('/health')
+def health():
+    return jsonify({"status": "healthy"}), 200
+
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0", port=port, debug=False)
