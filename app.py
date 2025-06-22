@@ -1,3 +1,5 @@
+from PIL import Image, ImageEnhance, ImageFilter
+import pytesseract
 import os
 import uuid
 import time
@@ -23,6 +25,18 @@ os.makedirs(os.path.join(os.path.dirname(__file__), 'static'), exist_ok=True)
 # Vérifier que la clé API est bien définie (optionnel en production)
 if not DEEPL_API_KEY:
     print("ATTENTION: La clé API DeepL n'est pas définie dans les variables d'environnement")
+
+# Vérifier si Tesseract est disponible
+def is_tesseract_available():
+    try:
+        pytesseract.get_tesseract_version()
+        return True
+    except Exception:
+        return False
+
+TESSERACT_AVAILABLE = is_tesseract_available()
+if not TESSERACT_AVAILABLE:
+    print("ATTENTION: Tesseract OCR n'est pas disponible")
 
 # Langues supportées par DeepL et gTTS
 SUPPORTED_LANGUAGES = {
@@ -51,23 +65,46 @@ def home():
     translation = ""
     error = ""
     target_lang = ""
+    extracted_text = ""
 
     if request.method == "POST":
         text = request.form.get("text")
         target_lang = request.form.get("lang")
+        image_file = request.files.get("image")
 
-        if not text:
-            error = "Veuillez saisir du texte."
+        if image_file and image_file.filename != '':
+            if not TESSERACT_AVAILABLE:
+                error = "OCR non disponible sur ce serveur. Veuillez saisir le texte manuellement."
+            else:
+                try:
+                    # Ouvrir l'image avec Pillow
+                    img = Image.open(image_file)
+
+                    # Amélioration basique de l'image pour l'OCR
+                    img = img.convert('L')  # En niveaux de gris
+                    enhancer = ImageEnhance.Contrast(img)
+                    img = enhancer.enhance(2)  # Augmenter le contraste
+                    img = img.point(lambda x: 0 if x < 140 else 255, '1')  # Binarisation
+
+                    # Extraire le texte avec Tesseract OCR
+                    extracted_text = pytesseract.image_to_string(img).strip()
+
+                    if not extracted_text:
+                        error = "Aucun texte trouvé dans l'image."
+                    else:
+                        text = extracted_text  # Utiliser le texte extrait pour la traduction
+                except Exception as e:
+                    error = f"Erreur lors du traitement de l'image : {str(e)}"
+
+        if not text and not extracted_text:
+            error = "Veuillez saisir du texte ou téléverser une image."
         elif not target_lang:
             error = "Veuillez choisir une langue cible."
         elif target_lang not in SUPPORTED_LANGUAGES:
             error = f"Langue cible '{target_lang}' non supportée."
         else:
-            # Nettoyage du texte utilisateur
-            cleaned_text = text.strip().lower()
-            cleaned_text = cleaned_text.rstrip('?')  # Supprime le point d'interrogation en fin de ligne
+            cleaned_text = text.strip().lower().rstrip('?')
 
-            # Réponse statique si la question est détectée
             if cleaned_text in STATIC_RESPONSES:
                 translation = STATIC_RESPONSES[cleaned_text]
             else:
@@ -87,19 +124,17 @@ def home():
                             translation = result["translations"][0]["text"]
                         else:
                             error = f"Erreur DeepL ({response.status_code}) : {response.text}"
-                    except requests.exceptions.Timeout:
-                        error = "Le service de traduction est temporairement indisponible (timeout)."
-                    except requests.exceptions.RequestException as e:
-                        error = f"Erreur réseau lors de la requête : {str(e)}"
                     except Exception as e:
-                        error = f"Erreur inattendue : {str(e)}"
-
+                        error = f"Erreur réseau : {str(e)}"
+    
     return render_template(
         "index.html",
         translation=translation,
         error=error,
         languages=SUPPORTED_LANGUAGES,
-        target_lang=target_lang
+        target_lang=target_lang,
+        extracted_text=extracted_text,
+        ocr_available=TESSERACT_AVAILABLE  # Passer l'info au template
     )
 
 
@@ -167,10 +202,12 @@ def handle_exception(e):
     return render_template("error.html", error=f"Une erreur est survenue : {str(e)}"), 500
 
 
-# Route de santé pour Railway
 @app.route('/health')
 def health():
-    return jsonify({"status": "healthy"}), 200
+    return jsonify({
+        "status": "healthy",
+        "ocr_available": TESSERACT_AVAILABLE
+    }), 200
 
 
 if __name__ == "__main__":
