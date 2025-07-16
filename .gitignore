@@ -1,7 +1,19 @@
+# Environnements virtuels
 venv/
+env/
+
+# Fichiers Python compilés
 __pycache__/
 *.pyc
+
+# Fichiers système
 .DS_Store
+Thumbs.db
+
+# Fichiers de configuration et logs
 .env
 *.log
+*.tmp
+
+# Fichiers médias (facultatif à garder ou retirer selon tes besoins)
 *.mp3
