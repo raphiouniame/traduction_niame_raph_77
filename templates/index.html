@@ -12,6 +12,8 @@
             --card-bg: #ffffff;
             --danger-color: #ef4444;
             --accent-blue: #3b82f6;
+            --warning-color: #f59e0b;
+            --success-color: #10b981;
         }
 
         * {
@@ -45,6 +47,35 @@
             text-align: center;
             margin-bottom: 1.5rem;
             color: var(--primary-color);
+        }
+
+        /* Indicateur de jours restants */
+        .usage-indicator {
+            background: linear-gradient(135deg, #fef3c7 0%, #fbbf24 100%);
+            border: 1px solid var(--warning-color);
+            border-radius: 10px;
+            padding: 1rem;
+            margin-bottom: 1.5rem;
+            text-align: center;
+            font-weight: 500;
+            color: #92400e;
+        }
+
+        .usage-indicator.critical {
+            background: linear-gradient(135deg, #fecaca 0%, #f87171 100%);
+            border-color: var(--danger-color);
+            color: #991b1b;
+        }
+
+        .usage-indicator.good {
+            background: linear-gradient(135deg, #d1fae5 0%, #6ee7b7 100%);
+            border-color: var(--success-color);
+            color: #065f46;
+        }
+
+        .usage-indicator .icon {
+            font-size: 1.2rem;
+            margin-right: 0.5rem;
         }
 
         form {
@@ -167,11 +198,52 @@
             margin-top: 1rem;
             text-align: center;
         }
+
+        /* Footer avec info développeur */
+        .developer-info {
+            margin-top: 2rem;
+            text-align: center;
+            padding: 1rem;
+            background-color: #f3f4f6;
+            border-radius: 8px;
+            font-size: 0.9rem;
+            color: #6b7280;
+        }
+
+        @media (max-width: 600px) {
+            .container {
+                padding: 1.5rem;
+            }
+
+            .usage-indicator {
+                padding: 0.75rem;
+                font-size: 0.9rem;
+            }
+        }
     </style>
 </head>
 <body>
     <div class="container">
         <h1>🌐 Traducteur Intelligent</h1>
+
+        <!-- Indicateur de jours restants -->
+        <div class="usage-indicator {% if remaining_days <= 1 %}critical{% elif remaining_days <= 3 %}{% else %}good{% endif %}">
+            <span class="icon">
+                {% if remaining_days <= 1 %}⚠️
+                {% elif remaining_days <= 3 %}⏰
+                {% else %}✅
+                {% endif %}
+            </span>
+            <strong>
+                {% if remaining_days == 0 %}
+                    Dernier jour d'utilisation
+                {% elif remaining_days == 1 %}
+                    Plus que {{ remaining_days }} jour d'utilisation
+                {% else %}
+                    Plus que {{ remaining_days }} jours d'utilisation
+                {% endif %}
+            </strong>
+        </div>
 
         <form method="POST" enctype="multipart/form-data">
             <label for="text">Entrez le texte à traduire :</label>
@@ -198,30 +270,40 @@
         </form>
 
         <!-- Bloc combiné pour texte extrait + traduction -->
-        {% if extracted_text or translation %}
-            <div class="output-container">
-                {% if extracted_text %}
-                    <div class="extracted-section">
-                        <h3>📄 Texte extrait de l’image :</h3>
-                        <p id="extracted-text">{{ extracted_text }}</p>
-                        <button onclick="copyText('extracted-text')" type="button">📋 Copier</button>
-                    </div>
-                {% endif %}
+{% if extracted_text or translation %}
+<div class="output-container">
+    {% if extracted_text %}
+        <div class="extracted-section">
+            <h3>📄 Texte extrait de l'image :</h3>
+            <p id="extracted-text">{{ extracted_text }}</p>
+            <button onclick="copyText('extracted-text')" type="button">📋 Copier</button>
+        </div>
+    {% endif %}
 
-                {% if translation %}
-                    <div class="result">
-                        <h2>Résultat :</h2>
-                        <p id="translated-text">{{ translation }}</p>
-                        <span class="listen-button" onclick="speakText()">🔊 Écouter</span>
-                        <button onclick="copyText('translated-text')" type="button">📋 Copier</button>
-                    </div>
-                {% endif %}
-            </div>
-        {% endif %}
+    {% if translation %}
+        <div class="result">
+            <h2>Résultat :</h2>
+            <p id="translated-text">{{ translation }}</p>
+            <span class="listen-button" onclick="speakText()">🔊 Écouter</span>
+            <button onclick="copyText('translated-text')" type="button">📋 Copier</button>
+        </div>
+    {% endif %}
+</div>
+{% endif %}
+
+{% if error %}
+<p class="error">{{ error }}</p>
+{% endif %}
 
         {% if error %}
             <p class="error">{{ error }}</p>
         {% endif %}
+
+        <!-- Info développeur -->
+        <div class="developer-info">
+            💻 Développé par <strong>Raphaël Niamé</strong> | 
+            📞 <strong>+225 05 06 53 15 22</strong>
+        </div>
     </div>
 
     <script>
@@ -241,27 +323,76 @@
         function copyText(elementId) {
             const text = document.getElementById(elementId).innerText;
             navigator.clipboard.writeText(text).then(() => {
-                alert("✅ Texte copié !");
+                alert("✅ Texte copié dans le presse-papiers !");
             }).catch(err => {
-                alert("❌ Erreur lors de la copie : " + err);
+                console.error('Erreur lors de la copie:', err);
+                alert("❌ Erreur lors de la copie");
             });
         }
 
-        // Fonction pour écouter la traduction
+        // Fonction pour écouter le texte traduit
         function speakText() {
-            const text = document.getElementById("translated-text").innerText;
-            const lang = "{{ target_lang if target_lang else 'fr' }}";
-            fetch(`/speak/${encodeURIComponent(text)}?lang=${lang}`)
+            const translatedText = document.getElementById('translated-text').innerText;
+            const targetLang = document.getElementById('lang').value;
+            
+            if (!translatedText) {
+                alert("❌ Aucun texte à lire");
+                return;
+            }
+
+            // Désactiver le bouton temporairement
+            const button = document.querySelector('.listen-button');
+            const originalText = button.textContent;
+            button.textContent = '🔄 Chargement...';
+            button.style.pointerEvents = 'none';
+
+            // Appeler l'API speak
+            fetch(`/speak/${encodeURIComponent(translatedText)}?lang=${targetLang}`)
                 .then(response => response.json())
                 .then(data => {
+                    if (data.error) {
+                        throw new Error(data.error);
+                    }
+                    
+                    // Créer et jouer l'audio
                     const audio = new Audio(data.audio_url);
-                    audio.play();
+                    audio.play().catch(error => {
+                        console.error('Erreur lecture audio:', error);
+                        alert("❌ Erreur lors de la lecture audio");
+                    });
+                    
+                    // Réactiver le bouton après la lecture
+                    audio.addEventListener('ended', () => {
+                        button.textContent = originalText;
+                        button.style.pointerEvents = 'auto';
+                    });
                 })
                 .catch(error => {
-                    alert("Erreur lors de la génération audio.");
-                    console.error(error);
+                    console.error('Erreur:', error);
+                    alert("❌ Erreur lors de la génération audio");
+                    button.textContent = originalText;
+                    button.style.pointerEvents = 'auto';
                 });
         }
+
+        // Animation fade-in pour les résultats
+        document.addEventListener('DOMContentLoaded', function() {
+            const result = document.querySelector('.result');
+            if (result) {
+                result.style.animation = 'fadeIn 0.5s ease-in-out';
+            }
+        });
     </script>
+
+    <style>
+        .result {
+            animation: fadeIn 0.5s ease-in-out;
+        }
+        
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+    </style>
 </body>
 </html>

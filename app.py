@@ -4,8 +4,11 @@ import os
 import uuid
 import time
 import requests
+import hashlib
+import json
+from datetime import datetime, timedelta
 
-from flask import Flask, render_template, request, jsonify
+from flask import Flask, render_template, request, jsonify, make_response
 from dotenv import load_dotenv
 from gtts import gTTS
 
@@ -59,6 +62,77 @@ STATIC_RESPONSES = {
     "quién te creó": "Raphaël Niamé (+225 05 06 53 15 22)",
 }
 
+# Configuration pour la limitation d'utilisation
+USAGE_LIMIT_DAYS = 7  # Limite de 7 jours
+USAGE_TRACKING = {}  # Stockage en mémoire des utilisateurs
+
+def get_device_fingerprint(request):
+    """Génère une empreinte unique pour l'appareil basée sur l'IP et le User-Agent"""
+    user_agent = request.headers.get('User-Agent', '')
+    ip_address = request.remote_addr or request.environ.get('HTTP_X_FORWARDED_FOR', '127.0.0.1')
+    
+    # Créer une empreinte unique
+    fingerprint_data = f"{ip_address}_{user_agent}"
+    return hashlib.sha256(fingerprint_data.encode()).hexdigest()
+
+def is_device_expired(device_id):
+    """Vérifie si l'appareil a dépassé la limite d'utilisation"""
+    if device_id not in USAGE_TRACKING:
+        return False
+    
+    first_access = datetime.fromisoformat(USAGE_TRACKING[device_id]['first_access'])
+    expiration_date = first_access + timedelta(days=USAGE_LIMIT_DAYS)
+    
+    return datetime.now() > expiration_date
+
+def register_device_access(device_id):
+    """Enregistre l'accès d'un appareil"""
+    if device_id not in USAGE_TRACKING:
+        USAGE_TRACKING[device_id] = {
+            'first_access': datetime.now().isoformat(),
+            'last_access': datetime.now().isoformat(),
+            'access_count': 1
+        }
+    else:
+        USAGE_TRACKING[device_id]['last_access'] = datetime.now().isoformat()
+        USAGE_TRACKING[device_id]['access_count'] += 1
+
+def get_remaining_days(device_id):
+    """Calcule le nombre de jours restants pour un appareil"""
+    if device_id not in USAGE_TRACKING:
+        return USAGE_LIMIT_DAYS
+    
+    first_access = datetime.fromisoformat(USAGE_TRACKING[device_id]['first_access'])
+    expiration_date = first_access + timedelta(days=USAGE_LIMIT_DAYS)
+    remaining = expiration_date - datetime.now()
+    
+    return max(0, remaining.days)
+
+def check_device_access():
+    """Middleware pour vérifier l'accès de l'appareil"""
+    device_id = get_device_fingerprint(request)
+    
+    if is_device_expired(device_id):
+        return render_template(
+            "expired.html",
+            message="Délai d'utilisation dépassé. Veuillez contacter le concepteur de l'application.",
+            contact="Raphaël Niamé (+225 05 06 53 15 22)"
+        ), 403
+    
+    register_device_access(device_id)
+    return None
+
+@app.before_request
+def before_request():
+    # Nettoyer les anciens fichiers audio
+    static_folder = app.static_folder or os.path.join(os.path.dirname(__file__), 'static')
+    cleanup_old_files(static_folder)
+    
+    # Vérifier l'accès pour les routes principales (sauf les assets statiques)
+    if request.endpoint and request.endpoint not in ['static', 'health']:
+        access_check = check_device_access()
+        if access_check:
+            return access_check
 
 @app.route("/", methods=["GET", "POST"])
 def home():
@@ -66,6 +140,10 @@ def home():
     error = ""
     target_lang = ""
     extracted_text = ""
+    
+    # Informations sur l'utilisation
+    device_id = get_device_fingerprint(request)
+    remaining_days = get_remaining_days(device_id)
 
     if request.method == "POST":
         text = request.form.get("text")
@@ -134,9 +212,9 @@ def home():
         languages=SUPPORTED_LANGUAGES,
         target_lang=target_lang,
         extracted_text=extracted_text,
-        ocr_available=TESSERACT_AVAILABLE  # Passer l'info au template
+        ocr_available=TESSERACT_AVAILABLE,
+        remaining_days=remaining_days
     )
-
 
 @app.route("/speak/<path:text>")
 def speak(text):
@@ -162,7 +240,6 @@ def speak(text):
     except Exception as e:
         return jsonify({"error": f"Erreur lors de la génération audio : {str(e)}"}), 500
 
-
 def cleanup_old_files(folder, max_age_seconds=3600):
     try:
         if not os.path.exists(folder):
@@ -179,36 +256,44 @@ def cleanup_old_files(folder, max_age_seconds=3600):
     except Exception as e:
         print(f"Erreur lors du nettoyage: {str(e)}")
 
-
-@app.before_request
-def before_request():
-    static_folder = app.static_folder or os.path.join(os.path.dirname(__file__), 'static')
-    cleanup_old_files(static_folder)
-
+@app.route("/usage-info")
+def usage_info():
+    """Route pour afficher les informations d'utilisation (pour le développeur)"""
+    device_id = get_device_fingerprint(request)
+    
+    info = {
+        "device_id": device_id[:8] + "...",  # Masquer l'ID complet
+        "remaining_days": get_remaining_days(device_id),
+        "total_tracked_devices": len(USAGE_TRACKING),
+        "is_expired": is_device_expired(device_id)
+    }
+    
+    if device_id in USAGE_TRACKING:
+        info["first_access"] = USAGE_TRACKING[device_id]["first_access"]
+        info["access_count"] = USAGE_TRACKING[device_id]["access_count"]
+    
+    return jsonify(info)
 
 @app.errorhandler(404)
 def page_not_found(e):
     return render_template("error.html", error="Page introuvable (404)"), 404
 
-
 @app.errorhandler(500)
 def internal_server_error(e):
     return render_template("error.html", error="Erreur interne du serveur (500)"), 500
-
 
 @app.errorhandler(Exception)
 def handle_exception(e):
     app.logger.error(f"Une erreur non gérée s'est produite : {str(e)}")
     return render_template("error.html", error=f"Une erreur est survenue : {str(e)}"), 500
 
-
 @app.route('/health')
 def health():
     return jsonify({
         "status": "healthy",
-        "ocr_available": TESSERACT_AVAILABLE
+        "ocr_available": TESSERACT_AVAILABLE,
+        "tracked_devices": len(USAGE_TRACKING)
     }), 200
-
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
